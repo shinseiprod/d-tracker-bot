@@ -60,20 +60,21 @@ SOLANA_WS_URL = "wss://api.mainnet-beta.solana.com"
 SOLANA_HTTP_URL = "https://api.mainnet-beta.solana.com"
 solana_client = Client(SOLANA_HTTP_URL)
 
-# Программа SPL Token (для трансферов токенов и других операций)
-SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623DQ5x"
+# Программы для отслеживания
+SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623DQ5x"  # SPL Token Program
+JUPITER_PROGRAM_ID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTp1"  # Jupiter Aggregator
 
-# Подписка на транзакции через WebSocket
-async def monitor_wallet_ws(address, name, types, chat_id):
+# Подписка на транзакции через WebSocket (общий метод для обеих программ)
+async def monitor_program_ws(address, name, types, chat_id, program_id):
     async with connect(SOLANA_WS_URL) as ws:
         # Даём задержку для инициализации WebSocket
         await asyncio.sleep(5)
 
-        # Подписываемся на транзакции программы SPL Token
-        await ws.program_subscribe(SPL_TOKEN_PROGRAM_ID)
+        # Подписываемся на транзакции программы
+        await ws.program_subscribe(program_id)
         first_resp = await ws.recv()
         subscription_id = first_resp.result
-        logger.info(f"Подписка на программу SPL Token для кошелька {name} ({address}) успешна, ID подписки: {subscription_id}")
+        logger.info(f"Подписка на программу {program_id} для кошелька {name} ({address}) успешна, ID подписки: {subscription_id}")
 
         error_notified = False  # Флаг для отслеживания ошибок
         try:
@@ -83,7 +84,7 @@ async def monitor_wallet_ws(address, name, types, chat_id):
                     data = msg.result.value
                     if not data:
                         if not error_notified:
-                            bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) неактивен или не имеет транзакций.")
+                            bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) неактивен или не имеет транзакций для программы {program_id}.")
                             error_notified = True
                         continue
 
@@ -93,7 +94,7 @@ async def monitor_wallet_ws(address, name, types, chat_id):
                         continue
 
                     signature = data.get("signature")
-                    logger.info(f"Новая транзакция для {name}: {signature}")
+                    logger.info(f"Новая транзакция для {name} через программу {program_id}: {signature}")
 
                     # Используем Solana JSON-RPC для получения деталей транзакции
                     tx_response = solana_client.get_transaction(signature, encoding="jsonParsed")
@@ -126,13 +127,28 @@ async def monitor_wallet_ws(address, name, types, chat_id):
                         bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
                         logger.info(f"Уведомление отправлено для {name}: {tx_type}")
                 except Exception as e:
-                    logger.error(f"Ошибка обработки транзакции для {name}: {str(e)}")
+                    logger.error(f"Ошибка обработки транзакции для {name} (программа {program_id}): {str(e)}")
                     if not error_notified:
-                        bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name}: {str(e)}")
+                        bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name} (программа {program_id}): {str(e)}")
                         error_notified = True
         finally:
             # Отписываемся при завершении
             await ws.program_unsubscribe(subscription_id)
+
+# Мониторинг кошелька через обе программы
+def monitor_wallet(address, name, types, chat_id):
+    # Запускаем мониторинг для SPL Token Program
+    spl_thread = Thread(target=lambda: updater.run_async(monitor_program_ws, address, name, types, chat_id, SPL_TOKEN_PROGRAM_ID))
+    spl_thread.start()
+
+    # Запускаем мониторинг для Jupiter Aggregator
+    jupiter_thread = Thread(target=lambda: updater.run_async(monitor_program_ws, address, name, types, chat_id, JUPITER_PROGRAM_ID))
+    jupiter_thread.start()
+
+    # Сохраняем оба потока
+    with wallet_lock:
+        monitoring_threads[(name, "spl")] = spl_thread
+        monitoring_threads[(name, "jupiter")] = jupiter_thread
 
 # Классификация транзакций
 def classify_transaction(tx):
@@ -143,14 +159,15 @@ def classify_transaction(tx):
     for instruction in instructions:
         program_id = instruction.get("programId", "")
         if "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623DQ5x" in program_id:
-            # Проверяем, связана ли инструкция с токенами (SPL Token Program)
+            # SPL Token Program
             parsed = instruction.get("parsed", {})
             if parsed and parsed.get("type") == "transfer":
                 return "transfer"
-            elif parsed and parsed.get("type") == "swap":
-                return "swap"
             elif parsed and parsed.get("type") == "mint":
                 return "nft_mint"
+        elif "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTp1" in program_id:
+            # Jupiter Aggregator (свапы)
+            return "swap"
     
     # Проверяем изменения баланса SOL
     if meta.get("preBalances") and meta.get("postBalances"):
@@ -281,10 +298,8 @@ def button(update, context):
         
         with wallet_lock:
             tracked_wallets[name] = {"address": address, "types": types, "last_tx": None}
-        thread = Thread(target=lambda: updater.run_async(monitor_wallet_ws, address, name, types, chat_id))
-        thread.start()
-        with wallet_lock:
-            monitoring_threads[name] = thread  # Сохраняем поток
+        # Запускаем мониторинг через обе программы
+        monitor_wallet(address, name, types, chat_id)
         query.message.reply_text(f"Кошелек {name} добавлен в отслеживание.", reply_markup=main_menu())
         logger.info(f"Кошелек {name} добавлен: {address}, типы: {types}")
         del user_states[user_id]
