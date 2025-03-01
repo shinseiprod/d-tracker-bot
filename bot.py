@@ -66,12 +66,22 @@ async def monitor_program_ws(address, name, types, chat_id, program_id, bot):
         await asyncio.sleep(5)
 
         # Преобразуем program_id в Pubkey
-        program_pubkey = Pubkey.from_string(program_id)
+        try:
+            program_pubkey = Pubkey.from_string(program_id)
+        except Exception as e:
+            logger.error(f"Ошибка преобразования program_id {program_id} в Pubkey: {str(e)}")
+            return
 
         # Подписываемся на транзакции программы
         await ws.program_subscribe(program_pubkey)
         first_resp = await ws.recv()
-        subscription_id = first_resp.result
+
+        # Проверяем, является ли first_resp списком
+        if isinstance(first_resp, list) and len(first_resp) > 0:
+            subscription_id = first_resp[0].result
+        else:
+            subscription_id = first_resp.result
+
         logger.info(f"Подписка на программу {program_id} для кошелька {name} ({address}) успешна, ID подписки: {subscription_id}")
 
         error_notified = False  # Флаг для отслеживания ошибок
@@ -142,12 +152,22 @@ async def monitor_account_ws(address, name, types, chat_id, bot):
         await asyncio.sleep(5)
 
         # Преобразуем address в Pubkey
-        address_pubkey = Pubkey.from_string(address)
+        try:
+            address_pubkey = Pubkey.from_string(address)
+        except Exception as e:
+            logger.error(f"Ошибка преобразования address {address} в Pubkey: {str(e)}")
+            return
 
         # Подписываемся на изменения аккаунта
         await ws.account_subscribe(address_pubkey)
         first_resp = await ws.recv()
-        subscription_id = first_resp.result
+
+        # Проверяем, является ли first_resp списком
+        if isinstance(first_resp, list) and len(first_resp) > 0:
+            subscription_id = first_resp[0].result
+        else:
+            subscription_id = first_resp.result
+
         logger.info(f"Подписка на изменения аккаунта {name} ({address}) успешна, ID подписки: {subscription_id}")
 
         error_notified = False  # Флаг для отслеживания ошибок
