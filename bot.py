@@ -1,7 +1,6 @@
 import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
-import requests
 import time
 from threading import Thread, Lock
 import logging
@@ -9,6 +8,10 @@ import os
 import random
 import http.server
 import socketserver
+from solana.rpc.websocket_api import connect
+from solana.rpc.api import Client
+import json
+from base64 import b64decode
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -50,47 +53,42 @@ bot = updater.bot
 # Курс SOL в USD (для теста, нужно получать через API, например, CoinGecko)
 SOL_TO_USD = 137.0  # Пример: 1 SOL = 137 USD (как на скриншоте)
 
-# Проверка существования кошелька
-def check_wallet(address):
-    try:
-        url = f"https://public-api.solscan.io/account/transactions?account={address}&limit=1"
-        response = requests.get(url)
-        response.raise_for_status()
-        logger.info(f"Кошелек {address} найден на Solscan")
-        return True
-    except requests.exceptions.HTTPError as e:
-        if response.status_code == 404:
-            logger.warning(f"Кошелек {address} не найден на Solscan при проверке")
-            return False  # Кошелек не найден, но мы всё равно добавим его в отслеживание
-        raise e
-    except Exception as e:
-        logger.error(f"Ошибка проверки кошелька {address}: {str(e)}")
-        return False
+# Solana WebSocket клиент
+SOLANA_WS_URL = "wss://api.mainnet-beta.solana.com"
 
-# Мониторинг кошелька
-def monitor_wallet(address, name, types, chat_id):
-    last_tx = None
-    error_notified = False  # Флаг для отслеживания, было ли уже отправлено сообщение об ошибке
-    while True:
-        # Проверяем, находится ли кошелек в списке отслеживания
-        with wallet_lock:
-            if name not in tracked_wallets:
-                logger.info(f"Мониторинг кошелька {name} остановлен: кошелек удален из отслеживания")
-                break
+# Подписка на транзакции через WebSocket
+async def monitor_wallet_ws(address, name, types, chat_id):
+    async with connect(SOLANA_WS_URL) as ws:
+        # Подписываемся на изменения аккаунта
+        await ws.account_subscribe(address)
+        first_resp = await ws.recv()
+        subscription_id = first_resp.result
+        logger.info(f"Подписка на кошелек {name} ({address}) успешна, ID подписки: {subscription_id}")
 
+        error_notified = False  # Флаг для отслеживания ошибок
         try:
-            url = f"https://public-api.solscan.io/account/transactions?account={address}&limit=1"
-            response = requests.get(url)
-            response.raise_for_status()
-            txs = response.json()
-            
-            if txs and len(txs) > 0:
-                tx = txs[0]
-                tx_hash = tx["txHash"]
-                if tx_hash != last_tx:
-                    last_tx = tx_hash
+            async for msg in ws:
+                # Парсим сообщение от WebSocket
+                try:
+                    data = msg.result.value
+                    if not data:
+                        if not error_notified:
+                            bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) неактивен или не имеет транзакций.")
+                            error_notified = True
+                        continue
+
+                    # Получаем подпись транзакции
+                    signature = data["signature"]
+                    logger.info(f"Новая транзакция для {name}: {signature}")
+
+                    # Используем Solscan API для получения деталей транзакции
+                    url = f"https://public-api.solscan.io/transaction/{signature}"
+                    response = requests.get(url)
+                    response.raise_for_status()
+                    tx = response.json()
+
+                    # Классифицируем транзакцию
                     tx_type = classify_transaction(tx)
-                    logger.info(f"Обнаружена транзакция для {name}: {tx_type}, хэш: {tx_hash}")
                     if tx_type in types:
                         # Упрощенные данные о свапе (нужен API для точных данных)
                         sol_amount = tx.get("lamport", 0) / 1_000_000_000  # Лампорты в SOL
@@ -104,27 +102,21 @@ def monitor_wallet(address, name, types, chat_id):
                             f"#{name.upper()}\n"
                             f"Swapped {sol_amount:.2f} #SOL (${usd_amount:,.2f}) for {token_amount:,.2f} #{token_name} @ ${token_price}\n"
                             f"MC: ${market_cap}\n"
-                            f"#Solana | [Cielo](https://www.cielo.app/) | [ViewTx](https://solscan.io/tx/{tx_hash}) | [Chart](https://www.dextools.io/app/en/solana)\n"
+                            f"#Solana | [Cielo](https://www.cielo.app/) | [ViewTx](https://solscan.io/tx/{signature}) | [Chart](https://www.dextools.io/app/en/solana)\n"
                             f"[Buy on Trojan](https://t.me/BloomSolana_bot?start=ref_57Z29YIQ2J)\n\n"
                             f"👉 Купить можно тут: https://gmgn.ai/?ref=HiDMfJX4&chain=sol\n"
                             f"👉 Купить через Bloom: https://t.me/BloomSolana_bot?start=ref_57Z29YIQ2J"
                         )
                         bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
                         logger.info(f"Уведомление отправлено для {name}: {tx_type}")
-            else:
-                logger.warning(f"Нет транзакций для {address}")
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 404 and not error_notified:
-                logger.error(f"Кошелек {name} ({address}) не найден на Solscan")
-                bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) не найден на Solscan. Возможно, он неактивен или введен неверно. Продолжаю пытаться мониторить...")
-                error_notified = True  # Устанавливаем флаг, чтобы не повторять сообщение
-            else:
-                logger.error(f"Ошибка мониторинга {name}: {str(e)}")
-                bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name}: {str(e)}")
-        except Exception as e:
-            logger.error(f"Ошибка мониторинга {name}: {str(e)}")
-            bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name}: {str(e)}")
-        time.sleep(5)
+                except Exception as e:
+                    logger.error(f"Ошибка обработки транзакции для {name}: {str(e)}")
+                    if not error_notified:
+                        bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name}: {str(e)}")
+                        error_notified = True
+        finally:
+            # Отписываемся при завершении
+            await ws.account_unsubscribe(subscription_id)
 
 # Классификация транзакций
 def classify_transaction(tx):
@@ -266,7 +258,7 @@ def button(update, context):
         
         with wallet_lock:
             tracked_wallets[name] = {"address": address, "types": types, "last_tx": None}
-        thread = Thread(target=monitor_wallet, args=(address, name, types, chat_id))
+        thread = Thread(target=lambda: updater.run_async(monitor_wallet_ws, address, name, types, chat_id))
         thread.start()
         with wallet_lock:
             monitoring_threads[name] = thread  # Сохраняем поток
