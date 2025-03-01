@@ -1,9 +1,8 @@
 import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
 import requests
 import time
-from threading import Thread, Lock
 import logging
 import os
 import random
@@ -35,22 +34,14 @@ def start_dummy_server():
         httpd.serve_forever()
 
 # Запускаем фиктивный сервер в отдельном потоке
-dummy_server_thread = Thread(target=start_dummy_server, daemon=True)
-dummy_server_thread.start()
+dummy_server_thread = asyncio.get_event_loop().run_in_executor(None, start_dummy_server)
 
 # Словарь для хранения кошельков с синхронизацией
 tracked_wallets = {}
-wallet_lock = Lock()  # Для синхронизации доступа к tracked_wallets
-
-# Словарь для хранения состояния потоков
-monitoring_threads = {}
+wallet_lock = asyncio.Lock()  # Для синхронизации доступа к tracked_wallets
 
 # Временное хранилище для состояния
 user_states = {}
-
-# Telegram бот
-updater = Updater(BOT_TOKEN, use_context=True)
-bot = updater.bot
 
 # Курс SOL в USD (для теста, нужно получать через API, например, CoinGecko)
 SOL_TO_USD = 137.0  # Пример: 1 SOL = 137 USD (как на скриншоте)
@@ -67,7 +58,7 @@ PUMP_FUN_PROGRAM_ID = "6EF8rrecthR5DkcocFusWxY6dvdTQXThK6JVZSJ1C1"  # Pump Fun
 RAYDIUM_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"  # Raydium
 
 # Подписка на транзакции через WebSocket (для программ)
-async def monitor_program_ws(address, name, types, chat_id, program_id):
+async def monitor_program_ws(address, name, types, chat_id, program_id, bot):
     async with connect(SOLANA_WS_URL) as ws:
         # Даём задержку для инициализации WebSocket
         await asyncio.sleep(5)
@@ -86,7 +77,7 @@ async def monitor_program_ws(address, name, types, chat_id, program_id):
                     data = msg.result
                     if not data:
                         if not error_notified:
-                            bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) неактивен или не имеет транзакций для программы {program_id}.")
+                            await bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) неактивен или не имеет транзакций для программы {program_id}.")
                             error_notified = True
                         continue
 
@@ -105,7 +96,7 @@ async def monitor_program_ws(address, name, types, chat_id, program_id):
                     tx_response = solana_client.get_transaction(signature, encoding="jsonParsed")
                     if not tx_response["result"]:
                         if not error_notified:
-                            bot.send_message(chat_id=chat_id, text=f"Не удалось получить детали транзакции {signature} для кошелька {name}.")
+                            await bot.send_message(chat_id=chat_id, text=f"Не удалось получить детали транзакции {signature} для кошелька {name}.")
                             error_notified = True
                         continue
 
@@ -128,19 +119,19 @@ async def monitor_program_ws(address, name, types, chat_id, program_id):
                             f"👉 Купить можно тут: https://gmgn.ai/?ref=HiDMfJX4&chain=sol\n"
                             f"👉 Купить через Bloom: https://t.me/BloomSolana_bot?start=ref_57Z29YIQ2J"
                         )
-                        bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
+                        await bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
                         logger.info(f"Уведомление отправлено для {name}: {tx_type}")
                 except Exception as e:
                     logger.error(f"Ошибка обработки транзакции для {name} (программа {program_id}): {str(e)}")
                     if not error_notified:
-                        bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name} (программа {program_id}): {str(e)}")
+                        await bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name} (программа {program_id}): {str(e)}")
                         error_notified = True
         finally:
             # Отписываемся при завершении
             await ws.program_unsubscribe(subscription_id)
 
 # Подписка на изменения аккаунта (для прямых операций с SOL)
-async def monitor_account_ws(address, name, types, chat_id):
+async def monitor_account_ws(address, name, types, chat_id, bot):
     async with connect(SOLANA_WS_URL) as ws:
         # Даём задержку для инициализации WebSocket
         await asyncio.sleep(5)
@@ -159,7 +150,7 @@ async def monitor_account_ws(address, name, types, chat_id):
                     data = msg.result
                     if not data:
                         if not error_notified:
-                            bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) неактивен или не имеет транзакций.")
+                            await bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) неактивен или не имеет транзакций.")
                             error_notified = True
                         continue
 
@@ -174,7 +165,7 @@ async def monitor_account_ws(address, name, types, chat_id):
                     tx_response = solana_client.get_transaction(signature, encoding="jsonParsed")
                     if not tx_response["result"]:
                         if not error_notified:
-                            bot.send_message(chat_id=chat_id, text=f"Не удалось получить детали транзакции {signature} для кошелька {name}.")
+                            await bot.send_message(chat_id=chat_id, text=f"Не удалось получить детали транзакции {signature} для кошелька {name}.")
                             error_notified = True
                         continue
 
@@ -197,46 +188,33 @@ async def monitor_account_ws(address, name, types, chat_id):
                             f"👉 Купить можно тут: https://gmgn.ai/?ref=HiDMfJX4&chain=sol\n"
                             f"👉 Купить через Bloom: https://t.me/BloomSolana_bot?start=ref_57Z29YIQ2J"
                         )
-                        bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
+                        await bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
                         logger.info(f"Уведомление отправлено для {name}: {tx_type}")
                 except Exception as e:
                     logger.error(f"Ошибка обработки транзакции для {name} (account_subscribe): {str(e)}")
                     if not error_notified:
-                        bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name} (account_subscribe): {str(e)}")
+                        await bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name} (account_subscribe): {str(e)}")
                         error_notified = True
         finally:
             # Отписываемся при завершении
             await ws.account_unsubscribe(subscription_id)
 
 # Мониторинг кошелька через все программы
-def monitor_wallet(address, name, types, chat_id):
+async def monitor_wallet(address, name, types, chat_id, bot):
     # Запускаем мониторинг для SPL Token Program
-    spl_thread = Thread(target=lambda: updater.run_async(monitor_program_ws, address, name, types, chat_id, SPL_TOKEN_PROGRAM_ID))
-    spl_thread.start()
+    asyncio.create_task(monitor_program_ws(address, name, types, chat_id, SPL_TOKEN_PROGRAM_ID, bot))
 
     # Запускаем мониторинг для Jupiter Aggregator
-    jupiter_thread = Thread(target=lambda: updater.run_async(monitor_program_ws, address, name, types, chat_id, JUPITER_PROGRAM_ID))
-    jupiter_thread.start()
+    asyncio.create_task(monitor_program_ws(address, name, types, chat_id, JUPITER_PROGRAM_ID, bot))
 
     # Запускаем мониторинг для Pump Fun
-    pump_fun_thread = Thread(target=lambda: updater.run_async(monitor_program_ws, address, name, types, chat_id, PUMP_FUN_PROGRAM_ID))
-    pump_fun_thread.start()
+    asyncio.create_task(monitor_program_ws(address, name, types, chat_id, PUMP_FUN_PROGRAM_ID, bot))
 
     # Запускаем мониторинг для Raydium
-    raydium_thread = Thread(target=lambda: updater.run_async(monitor_program_ws, address, name, types, chat_id, RAYDIUM_PROGRAM_ID))
-    raydium_thread.start()
+    asyncio.create_task(monitor_program_ws(address, name, types, chat_id, RAYDIUM_PROGRAM_ID, bot))
 
     # Запускаем мониторинг изменений аккаунта (для прямых операций с SOL)
-    account_thread = Thread(target=lambda: updater.run_async(monitor_account_ws, address, name, types, chat_id))
-    account_thread.start()
-
-    # Сохраняем все потоки
-    with wallet_lock:
-        monitoring_threads[(name, "spl")] = spl_thread
-        monitoring_threads[(name, "jupiter")] = jupiter_thread
-        monitoring_threads[(name, "pump_fun")] = pump_fun_thread
-        monitoring_threads[(name, "raydium")] = raydium_thread
-        monitoring_threads[(name, "account")] = account_thread
+    asyncio.create_task(monitor_account_ws(address, name, types, chat_id, bot))
 
 # Классификация транзакций
 def classify_transaction(tx):
@@ -312,33 +290,33 @@ def types_menu(selected_types):
     return InlineKeyboardMarkup(keyboard)
 
 # Команда /start
-def start(update, context):
-    update.message.reply_text(
+async def start(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
         "Привет! Я трекер кошельков.\nВыбери действие:",
         reply_markup=main_menu()
     )
     logger.info("Команда /start выполнена")
 
 # Обработчик нажатий на кнопки
-def button(update, context):
+async def button(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    query.answer()
+    await query.answer()
     chat_id = query.message.chat_id
     user_id = query.from_user.id
     data = query.data
 
     if data == 'add':
         user_states[user_id] = {'state': 'awaiting_address', 'selected_types': []}
-        query.message.reply_text("Введите адрес кошелька Solana:")
+        await query.message.reply_text("Введите адрес кошелька Solana:")
     elif data == 'list':
-        with wallet_lock:
+        async with wallet_lock:
             if not tracked_wallets:
-                query.message.reply_text("Нет отслеживаемых кошельков.", reply_markup=main_menu())
+                await query.message.reply_text("Нет отслеживаемых кошельков.", reply_markup=main_menu())
                 return
             response = "Список отслеживаемых кошельков:\n\n"
             for name, data in tracked_wallets.items():
                 response += f"💼 {name} (Solana)\nКОПИРОВАТЬ\n{data['address']}\n/edit_{random.randint(1000000, 9999999)}\n\n"
-        query.message.reply_text(response, reply_markup=main_menu())
+        await query.message.reply_text(response, reply_markup=main_menu())
         logger.info("Список кошельков отправлен")
     elif data == 'menu':
         keyboard = [
@@ -346,7 +324,7 @@ def button(update, context):
             [InlineKeyboardButton("📁 List", callback_data='list')],
             [InlineKeyboardButton("📢 Канал @degen_danny", url='https://t.me/degen_danny')]
         ]
-        query.message.reply_text(
+        await query.message.reply_text(
             "Меню:\n"
             "Канал: @degen_danny\n"
             "Выбери действие:",
@@ -355,7 +333,7 @@ def button(update, context):
     elif data == 'cancel':
         if user_id in user_states:
             del user_states[user_id]
-        query.message.reply_text("Действие отменено.", reply_markup=main_menu())
+        await query.message.reply_text("Действие отменено.", reply_markup=main_menu())
     elif data.startswith('type_'):
         type_id = data.split('_')[1]
         if user_id not in user_states:
@@ -366,7 +344,7 @@ def button(update, context):
         else:
             selected_types.append(type_id)
         user_states[user_id]['selected_types'] = selected_types
-        query.message.edit_reply_markup(reply_markup=types_menu(selected_types))
+        await query.message.edit_reply_markup(reply_markup=types_menu(selected_types))
     elif data == 'select_all':
         if user_id not in user_states:
             return
@@ -378,7 +356,7 @@ def button(update, context):
             "wrap", "nft_liquidation", "contract_creation", "other"
         ]
         user_states[user_id]['selected_types'] = all_types
-        query.message.edit_reply_markup(reply_markup=types_menu(all_types))
+        await query.message.edit_reply_markup(reply_markup=types_menu(all_types))
     elif data == 'confirm_types':
         if user_id not in user_states:
             return
@@ -387,25 +365,25 @@ def button(update, context):
         address = state.get('address')
         types = state.get('selected_types', [])
         if not types:
-            query.message.reply_text("Выберите хотя бы один тип транзакции.", reply_markup=types_menu(types))
+            await query.message.reply_text("Выберите хотя бы один тип транзакции.", reply_markup=types_menu(types))
             return
         
-        with wallet_lock:
+        async with wallet_lock:
             tracked_wallets[name] = {"address": address, "types": types, "last_tx": None}
         # Запускаем мониторинг через все программы
-        monitor_wallet(address, name, types, chat_id)
-        query.message.reply_text(f"Кошелек {name} добавлен в отслеживание.", reply_markup=main_menu())
+        await monitor_wallet(address, name, types, chat_id, context.bot)
+        await query.message.reply_text(f"Кошелек {name} добавлен в отслеживание.", reply_markup=main_menu())
         logger.info(f"Кошелек {name} добавлен: {address}, типы: {types}")
         del user_states[user_id]
 
 # Обработчик текстовых сообщений
-def handle_message(update, context):
+async def handle_message(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     chat_id = update.message.chat_id
     text = update.message.text
 
     if user_id not in user_states:
-        update.message.reply_text("Пожалуйста, используйте кнопки для взаимодействия.", reply_markup=main_menu())
+        await update.message.reply_text("Пожалуйста, используйте кнопки для взаимодействия.", reply_markup=main_menu())
         return
 
     state = user_states[user_id]['state']
@@ -413,20 +391,24 @@ def handle_message(update, context):
     if state == 'awaiting_address':
         user_states[user_id]['address'] = text
         user_states[user_id]['state'] = 'awaiting_name'
-        update.message.reply_text("Введите название кошелька:")
+        await update.message.reply_text("Введите название кошелька:")
     elif state == 'awaiting_name':
         name = text
         user_states[user_id]['name'] = name
         user_states[user_id]['state'] = 'awaiting_types'
-        update.message.reply_text("Выберите типы транзакций для отслеживания:", reply_markup=types_menu([]))
+        await update.message.reply_text("Выберите типы транзакций для отслеживания:", reply_markup=types_menu([]))
 
 def main():
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CallbackQueryHandler(button))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    updater.start_polling()
-    updater.idle()
+    # Создаём приложение
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    # Добавляем обработчики
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button))
+    application.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+
+    # Запускаем бота
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
