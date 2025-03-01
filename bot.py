@@ -11,6 +11,7 @@ import http.server
 import socketserver
 from solana.rpc.websocket_api import connect
 from solana.rpc.api import Client
+from solders.pubkey import Pubkey  # Импортируем Pubkey
 import json
 from base64 import b64decode
 import asyncio
@@ -52,7 +53,7 @@ SOLANA_WS_URL = "wss://api.mainnet-beta.solana.com"
 SOLANA_HTTP_URL = "https://api.mainnet-beta.solana.com"
 solana_client = Client(SOLANA_HTTP_URL)
 
-# Программы для отслеживания
+# Программы для отслеживания (в виде строк, которые потом преобразуем в Pubkey)
 SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623DQ5x"  # SPL Token Program
 JUPITER_PROGRAM_ID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTp1"  # Jupiter Aggregator
 PUMP_FUN_PROGRAM_ID = "6EF8rrecthR5DkcocFusWxY6dvdTQXThK6JVZSJ1C1"  # Pump Fun
@@ -64,8 +65,11 @@ async def monitor_program_ws(address, name, types, chat_id, program_id, bot):
         # Даём задержку для инициализации WebSocket
         await asyncio.sleep(5)
 
+        # Преобразуем program_id в Pubkey
+        program_pubkey = Pubkey.from_string(program_id)
+
         # Подписываемся на транзакции программы
-        await ws.program_subscribe(program_id)
+        await ws.program_subscribe(program_pubkey)
         first_resp = await ws.recv()
         subscription_id = first_resp.result
         logger.info(f"Подписка на программу {program_id} для кошелька {name} ({address}) успешна, ID подписки: {subscription_id}")
@@ -137,8 +141,11 @@ async def monitor_account_ws(address, name, types, chat_id, bot):
         # Даём задержку для инициализации WebSocket
         await asyncio.sleep(5)
 
+        # Преобразуем address в Pubkey
+        address_pubkey = Pubkey.from_string(address)
+
         # Подписываемся на изменения аккаунта
-        await ws.account_subscribe(address)
+        await ws.account_subscribe(address_pubkey)
         first_resp = await ws.recv()
         subscription_id = first_resp.result
         logger.info(f"Подписка на изменения аккаунта {name} ({address}) успешна, ID подписки: {subscription_id}")
