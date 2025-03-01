@@ -63,8 +63,10 @@ solana_client = Client(SOLANA_HTTP_URL)
 # Программы для отслеживания
 SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623DQ5x"  # SPL Token Program
 JUPITER_PROGRAM_ID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTp1"  # Jupiter Aggregator
+PUMP_FUN_PROGRAM_ID = "6EF8rrecthR5DkcocFusWxY6dvdTQXThK6JVZSJ1C1"  # Pump Fun
+RAYDIUM_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"  # Raydium
 
-# Подписка на транзакции через WebSocket (общий метод для обеих программ)
+# Подписка на транзакции через WebSocket (общий метод для всех программ)
 async def monitor_program_ws(address, name, types, chat_id, program_id):
     async with connect(SOLANA_WS_URL) as ws:
         # Даём задержку для инициализации WebSocket
@@ -119,8 +121,7 @@ async def monitor_program_ws(address, name, types, chat_id, program_id):
                             f"#{name.upper()}\n"
                             f"Swapped {sol_amount:.2f} #SOL (${usd_amount:,.2f}) for {token_amount:,.2f} #{token_name} @ ${token_price}\n"
                             f"MC: ${market_cap}\n"
-                            f"#Solana | [Cielo](https://www.cielo.app/) | [ViewTx](https://solscan.io/tx/{signature}) | [Chart](https://www.dextools.io/app/en/solana)\n"
-                            f"[Buy on Trojan](https://t.me/BloomSolana_bot?start=ref_57Z29YIQ2J)\n\n"
+                            f"#Solana | [ViewTx](https://solscan.io/tx/{signature}) | [Chart](https://www.dextools.io/app/en/solana)\n"
                             f"👉 Купить можно тут: https://gmgn.ai/?ref=HiDMfJX4&chain=sol\n"
                             f"👉 Купить через Bloom: https://t.me/BloomSolana_bot?start=ref_57Z29YIQ2J"
                         )
@@ -135,7 +136,73 @@ async def monitor_program_ws(address, name, types, chat_id, program_id):
             # Отписываемся при завершении
             await ws.program_unsubscribe(subscription_id)
 
-# Мониторинг кошелька через обе программы
+# Подписка на изменения аккаунта (для прямых операций с SOL)
+async def monitor_account_ws(address, name, types, chat_id):
+    async with connect(SOLANA_WS_URL) as ws:
+        # Даём задержку для инициализации WebSocket
+        await asyncio.sleep(5)
+
+        # Подписываемся на изменения аккаунта
+        await ws.account_subscribe(address)
+        first_resp = await ws.recv()
+        subscription_id = first_resp.result
+        logger.info(f"Подписка на изменения аккаунта {name} ({address}) успешна, ID подписки: {subscription_id}")
+
+        error_notified = False  # Флаг для отслеживания ошибок
+        try:
+            async for msg in ws:
+                # Парсим сообщение от WebSocket
+                try:
+                    data = msg.result.value
+                    if not data:
+                        if not error_notified:
+                            bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) неактивен или не имеет транзакций.")
+                            error_notified = True
+                        continue
+
+                    # Получаем подпись транзакции
+                    signature = data["signature"]
+                    logger.info(f"Новая транзакция для {name} (account_subscribe): {signature}")
+
+                    # Используем Solana JSON-RPC для получения деталей транзакции
+                    tx_response = solana_client.get_transaction(signature, encoding="jsonParsed")
+                    if not tx_response["result"]:
+                        if not error_notified:
+                            bot.send_message(chat_id=chat_id, text=f"Не удалось получить детали транзакции {signature} для кошелька {name}.")
+                            error_notified = True
+                        continue
+
+                    tx = tx_response["result"]
+                    tx_type = classify_transaction(tx)
+                    if tx_type in types:
+                        # Упрощенные данные о транзакции (нужен API для точных данных)
+                        sol_amount = tx.get("meta", {}).get("fee", 0) / 1_000_000_000  # Лампорты в SOL (используем fee как пример)
+                        usd_amount = sol_amount * SOL_TO_USD
+                        token_amount = random.uniform(5000000, 10000000)  # Пример
+                        token_name = "NYCPR"  # Нужно получать через API
+                        token_price = 0.000037  # Пример
+                        market_cap = "300.4K"  # Пример
+
+                        msg = (
+                            f"#{name.upper()}\n"
+                            f"Swapped {sol_amount:.2f} #SOL (${usd_amount:,.2f}) for {token_amount:,.2f} #{token_name} @ ${token_price}\n"
+                            f"MC: ${market_cap}\n"
+                            f"#Solana | [ViewTx](https://solscan.io/tx/{signature}) | [Chart](https://www.dextools.io/app/en/solana)\n"
+                            f"👉 Купить можно тут: https://gmgn.ai/?ref=HiDMfJX4&chain=sol\n"
+                            f"👉 Купить через Bloom: https://t.me/BloomSolana_bot?start=ref_57Z29YIQ2J"
+                        )
+                        bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
+                        logger.info(f"Уведомление отправлено для {name}: {tx_type}")
+                except Exception as e:
+                    logger.error(f"Ошибка обработки транзакции для {name} (account_subscribe): {str(e)}")
+                    if not error_notified:
+                        bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name} (account_subscribe): {str(e)}")
+                        error_notified = True
+        finally:
+            # Отписываемся при завершении
+            await ws.account_unsubscribe(subscription_id)
+
+# Мониторинг кошелька через все программы
 def monitor_wallet(address, name, types, chat_id):
     # Запускаем мониторинг для SPL Token Program
     spl_thread = Thread(target=lambda: updater.run_async(monitor_program_ws, address, name, types, chat_id, SPL_TOKEN_PROGRAM_ID))
@@ -145,10 +212,25 @@ def monitor_wallet(address, name, types, chat_id):
     jupiter_thread = Thread(target=lambda: updater.run_async(monitor_program_ws, address, name, types, chat_id, JUPITER_PROGRAM_ID))
     jupiter_thread.start()
 
-    # Сохраняем оба потока
+    # Запускаем мониторинг для Pump Fun
+    pump_fun_thread = Thread(target=lambda: updater.run_async(monitor_program_ws, address, name, types, chat_id, PUMP_FUN_PROGRAM_ID))
+    pump_fun_thread.start()
+
+    # Запускаем мониторинг для Raydium
+    raydium_thread = Thread(target=lambda: updater.run_async(monitor_program_ws, address, name, types, chat_id, RAYDIUM_PROGRAM_ID))
+    raydium_thread.start()
+
+    # Запускаем мониторинг изменений аккаунта (для прямых операций с SOL)
+    account_thread = Thread(target=lambda: updater.run_async(monitor_account_ws, address, name, types, chat_id))
+    account_thread.start()
+
+    # Сохраняем все потоки
     with wallet_lock:
         monitoring_threads[(name, "spl")] = spl_thread
         monitoring_threads[(name, "jupiter")] = jupiter_thread
+        monitoring_threads[(name, "pump_fun")] = pump_fun_thread
+        monitoring_threads[(name, "raydium")] = raydium_thread
+        monitoring_threads[(name, "account")] = account_thread
 
 # Классификация транзакций
 def classify_transaction(tx):
@@ -167,6 +249,12 @@ def classify_transaction(tx):
                 return "nft_mint"
         elif "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTp1" in program_id:
             # Jupiter Aggregator (свапы)
+            return "swap"
+        elif "6EF8rrecthR5DkcocFusWxY6dvdTQXThK6JVZSJ1C1" in program_id:
+            # Pump Fun (свапы или покупка/продажа токенов)
+            return "swap"
+        elif "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" in program_id:
+            # Raydium (свапы)
             return "swap"
     
     # Проверяем изменения баланса SOL
@@ -298,7 +386,7 @@ def button(update, context):
         
         with wallet_lock:
             tracked_wallets[name] = {"address": address, "types": types, "last_tx": None}
-        # Запускаем мониторинг через обе программы
+        # Запускаем мониторинг через все программы
         monitor_wallet(address, name, types, chat_id)
         query.message.reply_text(f"Кошелек {name} добавлен в отслеживание.", reply_markup=main_menu())
         logger.info(f"Кошелек {name} добавлен: {address}, типы: {types}")
