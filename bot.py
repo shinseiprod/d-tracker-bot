@@ -31,6 +31,21 @@ bot = updater.bot
 # Курс SOL в USD (для теста, нужно получать через API, например, CoinGecko)
 SOL_TO_USD = 137.0  # Пример: 1 SOL = 137 USD (как на скриншоте)
 
+# Проверка существования кошелька
+def check_wallet(address):
+    try:
+        url = f"https://public-api.solscan.io/account/transactions?account={address}&limit=1"
+        response = requests.get(url)
+        response.raise_for_status()
+        return True
+    except requests.exceptions.HTTPError as e:
+        if response.status_code == 404:
+            return False
+        raise e
+    except Exception as e:
+        logger.error(f"Ошибка проверки кошелька {address}: {str(e)}")
+        return False
+
 # Мониторинг кошелька
 def monitor_wallet(address, name, types, chat_id):
     last_tx = None
@@ -69,6 +84,14 @@ def monitor_wallet(address, name, types, chat_id):
                         logger.info(f"Уведомление отправлено для {name}: {tx_type}")
             else:
                 logger.warning(f"Нет транзакций для {address}")
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                logger.error(f"Кошелек {name} ({address}) не найден на Solscan")
+                bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) не найден на Solscan. Возможно, он неактивен или введен неверно.")
+                break
+            else:
+                logger.error(f"Ошибка мониторинга {name}: {str(e)}")
+                bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name}: {str(e)}")
         except Exception as e:
             logger.error(f"Ошибка мониторинга {name}: {str(e)}")
             bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name}: {str(e)}")
@@ -194,6 +217,16 @@ def button(update, context):
         if not types:
             query.message.reply_text("Выберите хотя бы один тип транзакции.", reply_markup=types_menu(types))
             return
+        
+        # Проверяем кошелек перед мониторингом
+        if not check_wallet(address):
+            query.message.reply_text(
+                f"Кошелек {address} не найден на Solscan. Проверьте адрес и попробуйте снова.",
+                reply_markup=main_menu()
+            )
+            del user_states[user_id]
+            return
+
         tracked_wallets[name] = {"address": address, "types": types, "last_tx": None}
         thread = Thread(target=monitor_wallet, args=(address, name, types, chat_id))
         thread.start()
