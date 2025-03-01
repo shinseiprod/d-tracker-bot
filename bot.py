@@ -73,6 +73,7 @@ def monitor_wallet(address, name, types, chat_id):
                 if tx_hash != last_tx:
                     last_tx = tx_hash
                     tx_type = classify_transaction(tx)
+                    logger.info(f"Обнаружена транзакция для {name}: {tx_type}, хэш: {tx_hash}")
                     if tx_type in types:
                         # Упрощенные данные о свапе (нужен API для точных данных)
                         sol_amount = tx.get("lamport", 0) / 1_000_000_000  # Лампорты в SOL
@@ -98,14 +99,9 @@ def monitor_wallet(address, name, types, chat_id):
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404 and not error_notified:
                 logger.error(f"Кошелек {name} ({address}) не найден на Solscan")
-                bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) не найден на Solscan. Возможно, он неактивен или введен неверно. Мониторинг прекращен.")
+                bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) не найден на Solscan. Возможно, он неактивен или введен неверно.")
                 error_notified = True  # Устанавливаем флаг, чтобы не повторять сообщение
-                with wallet_lock:
-                    if name in tracked_wallets:
-                        del tracked_wallets[name]  # Удаляем кошелек из отслеживания
-                    if name in monitoring_threads:
-                        del monitoring_threads[name]  # Удаляем поток из списка
-                break  # Прерываем цикл мониторинга
+                # НЕ удаляем кошелек, продолжаем мониторинг
             else:
                 logger.error(f"Ошибка мониторинга {name}: {str(e)}")
                 bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name}: {str(e)}")
@@ -123,7 +119,8 @@ def classify_transaction(tx):
     amount_change = changes[0]["amount"]
     token = changes[0].get("tokenAddress", "")
     
-    if "swap" in tx.get("txType", "").lower():
+    # Более точная классификация свапов
+    if "swap" in tx.get("txType", "").lower() or "Swap" in str(tx):
         return "swap"
     elif tx["lamport"] != 0:
         return "receive" if tx["lamport"] > 0 else "send"
@@ -164,6 +161,7 @@ def types_menu(selected_types):
     if row:
         keyboard.append(row)
     keyboard.append([
+        InlineKeyboardButton("Select All", callback_data='select_all'),
         InlineKeyboardButton("✅ Confirm", callback_data='confirm_types'),
         InlineKeyboardButton("❌ Cancel", callback_data='cancel')
     ])
@@ -225,6 +223,18 @@ def button(update, context):
             selected_types.append(type_id)
         user_states[user_id]['selected_types'] = selected_types
         query.message.edit_reply_markup(reply_markup=types_menu(selected_types))
+    elif data == 'select_all':
+        if user_id not in user_states:
+            return
+        # Выбираем все типы транзакций
+        all_types = [
+            "swap", "swap_buy", "swap_sell", "transfer", "lending",
+            "nft_mint", "nft_trade", "nft_transfer", "nft_lending",
+            "bridge", "reward", "approvals", "perpetual", "option",
+            "wrap", "nft_liquidation", "contract_creation", "other"
+        ]
+        user_states[user_id]['selected_types'] = all_types
+        query.message.edit_reply_markup(reply_markup=types_menu(all_types))
     elif data == 'confirm_types':
         if user_id not in user_states:
             return
