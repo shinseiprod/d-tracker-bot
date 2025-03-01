@@ -66,7 +66,7 @@ JUPITER_PROGRAM_ID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTp1"  # Jupiter Agg
 PUMP_FUN_PROGRAM_ID = "6EF8rrecthR5DkcocFusWxY6dvdTQXThK6JVZSJ1C1"  # Pump Fun
 RAYDIUM_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"  # Raydium
 
-# Подписка на транзакции через WebSocket (общий метод для всех программ)
+# Подписка на транзакции через WebSocket (для программ)
 async def monitor_program_ws(address, name, types, chat_id, program_id):
     async with connect(SOLANA_WS_URL) as ws:
         # Даём задержку для инициализации WebSocket
@@ -83,7 +83,7 @@ async def monitor_program_ws(address, name, types, chat_id, program_id):
             async for msg in ws:
                 # Парсим сообщение от WebSocket
                 try:
-                    data = msg.result.value
+                    data = msg.result
                     if not data:
                         if not error_notified:
                             bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) неактивен или не имеет транзакций для программы {program_id}.")
@@ -91,11 +91,14 @@ async def monitor_program_ws(address, name, types, chat_id, program_id):
                         continue
 
                     # Проверяем, связана ли транзакция с нашим кошельком
-                    accounts = data.get("transaction", {}).get("message", {}).get("accountKeys", [])
+                    accounts = data.get("value", {}).get("transaction", {}).get("message", {}).get("accountKeys", [])
                     if address not in accounts:
                         continue
 
-                    signature = data.get("signature")
+                    signature = data.get("value", {}).get("signature")
+                    if not signature:
+                        continue
+
                     logger.info(f"Новая транзакция для {name} через программу {program_id}: {signature}")
 
                     # Используем Solana JSON-RPC для получения деталей транзакции
@@ -153,7 +156,7 @@ async def monitor_account_ws(address, name, types, chat_id):
             async for msg in ws:
                 # Парсим сообщение от WebSocket
                 try:
-                    data = msg.result.value
+                    data = msg.result
                     if not data:
                         if not error_notified:
                             bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) неактивен или не имеет транзакций.")
@@ -161,7 +164,10 @@ async def monitor_account_ws(address, name, types, chat_id):
                         continue
 
                     # Получаем подпись транзакции
-                    signature = data["signature"]
+                    signature = data.get("value", {}).get("signature")
+                    if not signature:
+                        continue
+
                     logger.info(f"Новая транзакция для {name} (account_subscribe): {signature}")
 
                     # Используем Solana JSON-RPC для получения деталей транзакции
