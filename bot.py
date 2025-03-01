@@ -1,10 +1,12 @@
 import telegram
-from telegram.ext import Updater, CommandHandler
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
 import requests
 import time
 from threading import Thread
 import logging
 import os
+import random
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -19,10 +21,17 @@ if not BOT_TOKEN:
 # Словарь для хранения кошельков
 tracked_wallets = {}
 
+# Временное хранилище для состояния
+user_states = {}
+
 # Telegram бот
 updater = Updater(BOT_TOKEN, use_context=True)
 bot = updater.bot
 
+# Курс SOL в USD (для теста, нужно получать через API, например, CoinGecko)
+SOL_TO_USD = 137.0  # Пример: 1 SOL = 137 USD (как на скриншоте)
+
+# Мониторинг кошелька
 def monitor_wallet(address, name, types, chat_id):
     last_tx = None
     while name in tracked_wallets:
@@ -39,13 +48,24 @@ def monitor_wallet(address, name, types, chat_id):
                     last_tx = tx_hash
                     tx_type = classify_transaction(tx)
                     if tx_type in types:
+                        # Упрощенные данные о свапе (нужен API для точных данных)
+                        sol_amount = tx.get("lamport", 0) / 1_000_000_000  # Лампорты в SOL
+                        usd_amount = sol_amount * SOL_TO_USD
+                        token_amount = random.uniform(5000000, 10000000)  # Пример, нужно получать через API
+                        token_name = "NYCPR"  # Нужно получать через API
+                        token_price = 0.000037  # Пример
+                        market_cap = "300.4K"  # Пример, нужно получать через API
+
                         msg = (
-                            f"Кошелек: {name} ({address})\n"
-                            f"Тип: {tx_type}\n"
-                            f"Хэш: {tx_hash}\n"
-                            f"Время: {time.ctime(tx['blockTime'])}"
+                            f"#{name.upper()}\n"
+                            f"Swapped {sol_amount:.2f} #SOL (${usd_amount:,.2f}) for {token_amount:,.2f} #{token_name} @ ${token_price}\n"
+                            f"MC: ${market_cap}\n"
+                            f"#Solana | [Cielo](https://www.cielo.app/) | [ViewTx](https://solscan.io/tx/{tx_hash}) | [Chart](https://www.dextools.io/app/en/solana)\n"
+                            f"[Buy on Trojan](https://t.me/BloomSolana_bot?start=ref_57Z29YIQ2J)\n\n"
+                            f"Купить можно тут: https://gmgn.ai/?ref=HiDMfJX4&chain=sol\n"
+                            f"Купить через Bloom: https://t.me/BloomSolana_bot?start=ref_57Z29YIQ2J"
                         )
-                        bot.send_message(chat_id=chat_id, text=msg)
+                        bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
                         logger.info(f"Уведомление отправлено для {name}: {tx_type}")
             else:
                 logger.warning(f"Нет транзакций для {address}")
@@ -54,6 +74,7 @@ def monitor_wallet(address, name, types, chat_id):
             bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name}: {str(e)}")
         time.sleep(5)
 
+# Классификация транзакций
 def classify_transaction(tx):
     changes = tx.get("change", [])
     if not changes:
@@ -62,94 +83,45 @@ def classify_transaction(tx):
     amount_change = changes[0]["amount"]
     token = changes[0].get("tokenAddress", "")
     
-    if tx["lamport"] != 0:
+    if "swap" in tx.get("txType", "").lower():
+        return "swap"
+    elif tx["lamport"] != 0:
         return "receive" if tx["lamport"] > 0 else "send"
     elif token:
         return "buy" if amount_change > 0 else "sell"
-    elif "swap" in tx.get("txType", "").lower():
-        return "swap"
     return "unknown"
 
-def add_wallet(update, context):
-    try:
-        address, name = context.args
-        if name in tracked_wallets:
-            update.message.reply_text(f"Кошелек с именем {name} уже отслеживается.")
-            return
-        tracked_wallets[name] = {"address": address, "types": [], "last_tx": None}
-        update.message.reply_text(f"Добавлен кошелек: {name} ({address}). Укажи типы через /track.")
-        logger.info(f"Добавлен кошелек: {name} ({address})")
-    except ValueError:
-        update.message.reply_text("Используй: /add <address> <name>")
-        logger.error("Ошибка команды /add: неверный формат")
+# Главное меню с кнопками
+def main_menu():
+    keyboard = [
+        [InlineKeyboardButton("➕ Add", callback_data='add')],
+        [InlineKeyboardButton("📁 List", callback_data='list')],
+        [InlineKeyboardButton("✅ Menu", callback_data='menu')]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-def track_wallet(update, context):
-    try:
-        name, types_str = context.args[0], ",".join(context.args[1:])
-        if name not in tracked_wallets:
-            update.message.reply_text(f"Кошелек {name} не найден. Добавь через /add.")
-            return
-        types = types_str.split(",")
-        valid_types = {"swap", "buy", "sell", "send", "receive"}
-        if not all(t in valid_types for t in types):
-            update.message.reply_text(f"Доступные типы: {', '.join(valid_types)}")
-            return
-        
-        tracked_wallets[name]["types"] = types
-        chat_id = update.message.chat_id
-        
-        thread = Thread(target=monitor_wallet, args=(tracked_wallets[name]["address"], name, types, chat_id))
-        thread.start()
-        
-        update.message.reply_text(f"Отслеживание начато для {name}: {types_str}")
-        logger.info(f"Отслеживание начато для {name}: {types_str}")
-    except Exception as e:
-        update.message.reply_text(f"Ошибка: {str(e)}. Используй: /track <name> <types>")
-        logger.error(f"Ошибка команды /track: {str(e)}")
-
-def list_wallets(update, context):
-    if not tracked_wallets:
-        update.message.reply_text("Нет отслеживаемых кошельков.")
-        return
-    response = "Отслеживаемые кошельки:\n"
-    for name, data in tracked_wallets.items():
-        response += f"{name}: {data['address']} (Типы: {', '.join(data['types'])})\n"
-    update.message.reply_text(response)
-    logger.info("Список кошельков отправлен")
-
-def remove_wallet(update, context):
-    try:
-        name = context.args[0]
-        if name in tracked_wallets:
-            del tracked_wallets[name]
-            update.message.reply_text(f"Кошелек {name} удален.")
-            logger.info(f"Кошелек {name} удален")
-        else:
-            update.message.reply_text(f"Кошелек {name} не найден.")
-    except IndexError:
-        update.message.reply_text("Используй: /remove <name>")
-        logger.error("Ошибка команды /remove: неверный формат")
-
-def start(update, context):
-    update.message.reply_text(
-        "Привет! Я трекер кошельков.\n"
-        "Команды:\n"
-        "/add <address> <name> — добавить кошелек\n"
-        "/track <name> <types> — отслеживать типы (swap,buy,sell,send,receive)\n"
-        "/list — список кошельков\n"
-        "/remove <name> — удалить кошелек"
-    )
-    logger.info("Команда /start выполнена")
-
-def main():
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("add", add_wallet))
-    dp.add_handler(CommandHandler("track", track_wallet))
-    dp.add_handler(CommandHandler("list", list_wallets))
-    dp.add_handler(CommandHandler("remove", remove_wallet))
-    updater.start_polling()
-    updater.idle()
-
-if __name__ == '__main__':
-    main()
+# Меню типов транзакций
+def types_menu(selected_types):
+    types = [
+        ("Swap", "swap"), ("Swap Buy", "swap_buy"), ("Swap Sell", "swap_sell"),
+        ("Transfer", "transfer"), ("Lending", "lending"),
+        ("NFT Mint", "nft_mint"), ("NFT Trade", "nft_trade"),
+        ("NFT Transfer", "nft_transfer"), ("NFT Lending", "nft_lending"),
+        ("Bridge", "bridge"), ("Reward", "reward"),
+        ("Approvals", "approvals"), ("Perpetual", "perpetual"),
+        ("Option", "option"), ("Wrap", "wrap"),
+        ("NFT liquidation", "nft_liquidation"), ("Contract creation", "contract_creation"),
+        ("Other", "other")
+    ]
+    keyboard = []
+    row = []
+    for label, type_id in types:
+        emoji = "✅" if type_id in selected_types else "⬜"
+        row.append(InlineKeyboardButton(f"{emoji} {label}", callback_data=f"type_{type_id}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([
+        InlineKeyboardButton("✅ Confirm", callback
