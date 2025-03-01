@@ -3,7 +3,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
 import requests
 import time
-from threading import Thread
+from threading import Thread, Lock
 import logging
 import os
 import random
@@ -18,8 +18,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не установлен в переменных окружения!")
 
-# Словарь для хранения кошельков
+# Словарь для хранения кошельков с синхронизацией
 tracked_wallets = {}
+wallet_lock = Lock()  # Для синхронизации доступа к tracked_wallets
+
+# Словарь для хранения состояния потоков
+monitoring_threads = {}
 
 # Временное хранилище для состояния
 user_states = {}
@@ -50,7 +54,13 @@ def check_wallet(address):
 def monitor_wallet(address, name, types, chat_id):
     last_tx = None
     error_notified = False  # Флаг для отслеживания, было ли уже отправлено сообщение об ошибке
-    while name in tracked_wallets:
+    while True:
+        # Проверяем, находится ли кошелек в списке отслеживания
+        with wallet_lock:
+            if name not in tracked_wallets:
+                logger.info(f"Мониторинг кошелька {name} остановлен: кошелек удален из отслеживания")
+                break
+
         try:
             url = f"https://public-api.solscan.io/account/transactions?account={address}&limit=1"
             response = requests.get(url)
@@ -90,8 +100,11 @@ def monitor_wallet(address, name, types, chat_id):
                 logger.error(f"Кошелек {name} ({address}) не найден на Solscan")
                 bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) не найден на Solscan. Возможно, он неактивен или введен неверно. Мониторинг прекращен.")
                 error_notified = True  # Устанавливаем флаг, чтобы не повторять сообщение
-                if name in tracked_wallets:
-                    del tracked_wallets[name]  # Удаляем кошелек из отслеживания
+                with wallet_lock:
+                    if name in tracked_wallets:
+                        del tracked_wallets[name]  # Удаляем кошелек из отслеживания
+                    if name in monitoring_threads:
+                        del monitoring_threads[name]  # Удаляем поток из списка
                 break  # Прерываем цикл мониторинга
             else:
                 logger.error(f"Ошибка мониторинга {name}: {str(e)}")
@@ -176,12 +189,13 @@ def button(update, context):
         user_states[user_id] = {'state': 'awaiting_address', 'selected_types': []}
         query.message.reply_text("Введите адрес кошелька Solana:")
     elif data == 'list':
-        if not tracked_wallets:
-            query.message.reply_text("Нет отслеживаемых кошельков.", reply_markup=main_menu())
-            return
-        response = "Список отслеживаемых кошельков:\n\n"
-        for name, data in tracked_wallets.items():
-            response += f"💼 {name} (Solana)\nКОПИРОВАТЬ\n{data['address']}\n/edit_{random.randint(1000000, 9999999)}\n\n"
+        with wallet_lock:
+            if not tracked_wallets:
+                query.message.reply_text("Нет отслеживаемых кошельков.", reply_markup=main_menu())
+                return
+            response = "Список отслеживаемых кошельков:\n\n"
+            for name, data in tracked_wallets.items():
+                response += f"💼 {name} (Solana)\nКОПИРОВАТЬ\n{data['address']}\n/edit_{random.randint(1000000, 9999999)}\n\n"
         query.message.reply_text(response, reply_markup=main_menu())
         logger.info("Список кошельков отправлен")
     elif data == 'menu':
@@ -231,9 +245,12 @@ def button(update, context):
             del user_states[user_id]
             return
 
-        tracked_wallets[name] = {"address": address, "types": types, "last_tx": None}
+        with wallet_lock:
+            tracked_wallets[name] = {"address": address, "types": types, "last_tx": None}
         thread = Thread(target=monitor_wallet, args=(address, name, types, chat_id))
         thread.start()
+        with wallet_lock:
+            monitoring_threads[name] = thread  # Сохраняем поток
         query.message.reply_text(f"Кошелек {name} добавлен в отслеживание.", reply_markup=main_menu())
         logger.info(f"Кошелек {name} добавлен: {address}, типы: {types}")
         del user_states[user_id]
