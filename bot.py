@@ -1,6 +1,7 @@
 import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler
+from telegram.ext import filters  # Новый модуль фильтров
 import requests
 import time
 import logging
@@ -405,7 +406,7 @@ def main():
     # Добавляем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button))
-    application.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    application.add_handler(MessageHandler(filters.Text() & ~filters.Command(), handle_message))
 
     # Запускаем бота
     application.run_polling()
