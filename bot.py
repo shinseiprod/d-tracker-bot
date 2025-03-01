@@ -13,6 +13,7 @@ from solana.rpc.websocket_api import connect
 from solana.rpc.api import Client
 import json
 from base64 import b64decode
+import asyncio
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -59,14 +60,20 @@ SOLANA_WS_URL = "wss://api.mainnet-beta.solana.com"
 SOLANA_HTTP_URL = "https://api.mainnet-beta.solana.com"
 solana_client = Client(SOLANA_HTTP_URL)
 
+# Программа Serum (для свапов)
+SERUM_PROGRAM_ID = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"  # ID программы Serum v3
+
 # Подписка на транзакции через WebSocket
 async def monitor_wallet_ws(address, name, types, chat_id):
     async with connect(SOLANA_WS_URL) as ws:
-        # Подписываемся на изменения аккаунта
-        await ws.account_subscribe(address)
+        # Даём небольшую задержку для инициализации WebSocket
+        await asyncio.sleep(2)
+
+        # Подписываемся на транзакции программы Serum
+        await ws.program_subscribe(SERUM_PROGRAM_ID)
         first_resp = await ws.recv()
         subscription_id = first_resp.result
-        logger.info(f"Подписка на кошелек {name} ({address}) успешна, ID подписки: {subscription_id}")
+        logger.info(f"Подписка на программу Serum для кошелька {name} ({address}) успешна, ID подписки: {subscription_id}")
 
         error_notified = False  # Флаг для отслеживания ошибок
         try:
@@ -80,8 +87,12 @@ async def monitor_wallet_ws(address, name, types, chat_id):
                             error_notified = True
                         continue
 
-                    # Получаем подпись транзакции
-                    signature = data["signature"]
+                    # Проверяем, связана ли транзакция с нашим кошельком
+                    accounts = data.get("transaction", {}).get("message", {}).get("accountKeys", [])
+                    if address not in accounts:
+                        continue
+
+                    signature = data.get("signature")
                     logger.info(f"Новая транзакция для {name}: {signature}")
 
                     # Используем Solana JSON-RPC для получения деталей транзакции
@@ -121,9 +132,9 @@ async def monitor_wallet_ws(address, name, types, chat_id):
                         error_notified = True
         finally:
             # Отписываемся при завершении
-            await ws.account_unsubscribe(subscription_id)
+            await ws.program_unsubscribe(subscription_id)
 
-# Классификация транзакций
+# Классификация транЗакций
 def classify_transaction(tx):
     meta = tx.get("meta", {})
     instructions = tx.get("transaction", {}).get("message", {}).get("instructions", [])
