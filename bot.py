@@ -7,6 +7,8 @@ from threading import Thread, Lock
 import logging
 import os
 import random
+import http.server
+import socketserver
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,6 +19,19 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не установлен в переменных окружения!")
+
+# Фиктивный HTTP-сервер для Render
+PORT = int(os.getenv("PORT", 8443))  # Render использует переменную PORT, по умолчанию 8443
+
+def start_dummy_server():
+    Handler = http.server.SimpleHTTPRequestHandler
+    with socketserver.TCPServer(("", PORT), Handler) as httpd:
+        logger.info(f"Фиктивный сервер запущен на порту {PORT}")
+        httpd.serve_forever()
+
+# Запускаем фиктивный сервер в отдельном потоке
+dummy_server_thread = Thread(target=start_dummy_server, daemon=True)
+dummy_server_thread.start()
 
 # Словарь для хранения кошельков с синхронизацией
 tracked_wallets = {}
@@ -101,7 +116,6 @@ def monitor_wallet(address, name, types, chat_id):
                 logger.error(f"Кошелек {name} ({address}) не найден на Solscan")
                 bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) не найден на Solscan. Возможно, он неактивен или введен неверно.")
                 error_notified = True  # Устанавливаем флаг, чтобы не повторять сообщение
-                # НЕ удаляем кошелек, продолжаем мониторинг
             else:
                 logger.error(f"Ошибка мониторинга {name}: {str(e)}")
                 bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name}: {str(e)}")
