@@ -51,10 +51,10 @@ def monitor_wallet(address, name, types, chat_id):
                         # Упрощенные данные о свапе (нужен API для точных данных)
                         sol_amount = tx.get("lamport", 0) / 1_000_000_000  # Лампорты в SOL
                         usd_amount = sol_amount * SOL_TO_USD
-                        token_amount = random.uniform(5000000, 10000000)  # Пример, нужно получать через API
+                        token_amount = random.uniform(5000000, 10000000)  # Пример
                         token_name = "NYCPR"  # Нужно получать через API
                         token_price = 0.000037  # Пример
-                        market_cap = "300.4K"  # Пример, нужно получать через API
+                        market_cap = "300.4K"  # Пример
 
                         msg = (
                             f"#{name.upper()}\n"
@@ -62,8 +62,8 @@ def monitor_wallet(address, name, types, chat_id):
                             f"MC: ${market_cap}\n"
                             f"#Solana | [Cielo](https://www.cielo.app/) | [ViewTx](https://solscan.io/tx/{tx_hash}) | [Chart](https://www.dextools.io/app/en/solana)\n"
                             f"[Buy on Trojan](https://t.me/BloomSolana_bot?start=ref_57Z29YIQ2J)\n\n"
-                            f"Купить можно тут: https://gmgn.ai/?ref=HiDMfJX4&chain=sol\n"
-                            f"Купить через Bloom: https://t.me/BloomSolana_bot?start=ref_57Z29YIQ2J"
+                            f"👉 Купить можно тут: https://gmgn.ai/?ref=HiDMfJX4&chain=sol\n"
+                            f"👉 Купить через Bloom: https://t.me/BloomSolana_bot?start=ref_57Z29YIQ2J"
                         )
                         bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
                         logger.info(f"Уведомление отправлено для {name}: {tx_type}")
@@ -124,4 +124,112 @@ def types_menu(selected_types):
     if row:
         keyboard.append(row)
     keyboard.append([
-        InlineKeyboardButton("✅ Confirm", callback
+        InlineKeyboardButton("✅ Confirm", callback_data='confirm_types'),
+        InlineKeyboardButton("❌ Cancel", callback_data='cancel')
+    ])
+    return InlineKeyboardMarkup(keyboard)
+
+# Команда /start
+def start(update, context):
+    update.message.reply_text(
+        "Привет! Я трекер кошельков.\nВыбери действие:",
+        reply_markup=main_menu()
+    )
+    logger.info("Команда /start выполнена")
+
+# Обработчик нажатий на кнопки
+def button(update, context):
+    query = update.callback_query
+    query.answer()
+    chat_id = query.message.chat_id
+    user_id = query.from_user.id
+    data = query.data
+
+    if data == 'add':
+        user_states[user_id] = {'state': 'awaiting_address', 'selected_types': []}
+        query.message.reply_text("Введите адрес кошелька Solana:")
+    elif data == 'list':
+        if not tracked_wallets:
+            query.message.reply_text("Нет отслеживаемых кошельков.", reply_markup=main_menu())
+            return
+        response = "Список отслеживаемых кошельков:\n\n"
+        for name, data in tracked_wallets.items():
+            response += f"💼 {name} (Solana)\nКОПИРОВАТЬ\n{data['address']}\n/edit_{random.randint(1000000, 9999999)}\n\n"
+        query.message.reply_text(response, reply_markup=main_menu())
+        logger.info("Список кошельков отправлен")
+    elif data == 'menu':
+        keyboard = [
+            [InlineKeyboardButton("➕ Add", callback_data='add')],
+            [InlineKeyboardButton("📁 List", callback_data='list')],
+            [InlineKeyboardButton("📢 Канал @degen_danny", url='https://t.me/degen_danny')]
+        ]
+        query.message.reply_text(
+            "Меню:\n"
+            "Канал: @degen_danny\n"
+            "Выбери действие:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    elif data == 'cancel':
+        if user_id in user_states:
+            del user_states[user_id]
+        query.message.reply_text("Действие отменено.", reply_markup=main_menu())
+    elif data.startswith('type_'):
+        type_id = data.split('_')[1]
+        if user_id not in user_states:
+            return
+        selected_types = user_states[user_id].get('selected_types', [])
+        if type_id in selected_types:
+            selected_types.remove(type_id)
+        else:
+            selected_types.append(type_id)
+        user_states[user_id]['selected_types'] = selected_types
+        query.message.edit_reply_markup(reply_markup=types_menu(selected_types))
+    elif data == 'confirm_types':
+        if user_id not in user_states:
+            return
+        state = user_states[user_id]
+        name = state.get('name')
+        address = state.get('address')
+        types = state.get('selected_types', [])
+        if not types:
+            query.message.reply_text("Выберите хотя бы один тип транзакции.", reply_markup=types_menu(types))
+            return
+        tracked_wallets[name] = {"address": address, "types": types, "last_tx": None}
+        thread = Thread(target=monitor_wallet, args=(address, name, types, chat_id))
+        thread.start()
+        query.message.reply_text(f"Кошелек {name} добавлен в отслеживание.", reply_markup=main_menu())
+        logger.info(f"Кошелек {name} добавлен: {address}, типы: {types}")
+        del user_states[user_id]
+
+# Обработчик текстовых сообщений
+def handle_message(update, context):
+    user_id = update.message.from_user.id
+    chat_id = update.message.chat_id
+    text = update.message.text
+
+    if user_id not in user_states:
+        update.message.reply_text("Пожалуйста, используйте кнопки для взаимодействия.", reply_markup=main_menu())
+        return
+
+    state = user_states[user_id]['state']
+
+    if state == 'awaiting_address':
+        user_states[user_id]['address'] = text
+        user_states[user_id]['state'] = 'awaiting_name'
+        update.message.reply_text("Введите название кошелька:")
+    elif state == 'awaiting_name':
+        name = text
+        user_states[user_id]['name'] = name
+        user_states[user_id]['state'] = 'awaiting_types'
+        update.message.reply_text("Выберите типы транзакций для отслеживания:", reply_markup=types_menu([]))
+
+def main():
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CallbackQueryHandler(button))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
