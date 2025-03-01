@@ -60,20 +60,20 @@ SOLANA_WS_URL = "wss://api.mainnet-beta.solana.com"
 SOLANA_HTTP_URL = "https://api.mainnet-beta.solana.com"
 solana_client = Client(SOLANA_HTTP_URL)
 
-# Программа Serum (для свапов)
-SERUM_PROGRAM_ID = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"  # ID программы Serum v3
+# Программа SPL Token (для трансферов токенов и других операций)
+SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623DQ5x"
 
 # Подписка на транзакции через WebSocket
 async def monitor_wallet_ws(address, name, types, chat_id):
     async with connect(SOLANA_WS_URL) as ws:
-        # Даём небольшую задержку для инициализации WebSocket
-        await asyncio.sleep(2)
+        # Даём задержку для инициализации WebSocket
+        await asyncio.sleep(5)
 
-        # Подписываемся на транзакции программы Serum
-        await ws.program_subscribe(SERUM_PROGRAM_ID)
+        # Подписываемся на транзакции программы SPL Token
+        await ws.program_subscribe(SPL_TOKEN_PROGRAM_ID)
         first_resp = await ws.recv()
         subscription_id = first_resp.result
-        logger.info(f"Подписка на программу Serum для кошелька {name} ({address}) успешна, ID подписки: {subscription_id}")
+        logger.info(f"Подписка на программу SPL Token для кошелька {name} ({address}) успешна, ID подписки: {subscription_id}")
 
         error_notified = False  # Флаг для отслеживания ошибок
         try:
@@ -134,7 +134,7 @@ async def monitor_wallet_ws(address, name, types, chat_id):
             # Отписываемся при завершении
             await ws.program_unsubscribe(subscription_id)
 
-# Классификация транЗакций
+# Классификация транзакций
 def classify_transaction(tx):
     meta = tx.get("meta", {})
     instructions = tx.get("transaction", {}).get("message", {}).get("instructions", [])
@@ -142,12 +142,15 @@ def classify_transaction(tx):
     # Проверяем тип транзакции
     for instruction in instructions:
         program_id = instruction.get("programId", "")
-        if "spl-token" in program_id.lower():
-            # Проверяем, связана ли инструкция с токенами (например, свап)
-            if "transfer" in str(instruction).lower():
+        if "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623DQ5x" in program_id:
+            # Проверяем, связана ли инструкция с токенами (SPL Token Program)
+            parsed = instruction.get("parsed", {})
+            if parsed and parsed.get("type") == "transfer":
                 return "transfer"
-            elif "swap" in str(instruction).lower():
+            elif parsed and parsed.get("type") == "swap":
                 return "swap"
+            elif parsed and parsed.get("type") == "mint":
+                return "nft_mint"
     
     # Проверяем изменения баланса SOL
     if meta.get("preBalances") and meta.get("postBalances"):
