@@ -105,4 +105,51 @@ def track_wallet(update, context):
         logger.info(f"Отслеживание начато для {name}: {types_str}")
     except Exception as e:
         update.message.reply_text(f"Ошибка: {str(e)}. Используй: /track <name> <types>")
-        logger.error(f"Ошибка команды /track
+        logger.error(f"Ошибка команды /track: {str(e)}")
+
+def list_wallets(update, context):
+    if not tracked_wallets:
+        update.message.reply_text("Нет отслеживаемых кошельков.")
+        return
+    response = "Отслеживаемые кошельки:\n"
+    for name, data in tracked_wallets.items():
+        response += f"{name}: {data['address']} (Типы: {', '.join(data['types'])})\n"
+    update.message.reply_text(response)
+    logger.info("Список кошельков отправлен")
+
+def remove_wallet(update, context):
+    try:
+        name = context.args[0]
+        if name in tracked_wallets:
+            del tracked_wallets[name]
+            update.message.reply_text(f"Кошелек {name} удален.")
+            logger.info(f"Кошелек {name} удален")
+        else:
+            update.message.reply_text(f"Кошелек {name} не найден.")
+    except IndexError:
+        update.message.reply_text("Используй: /remove <name>")
+        logger.error("Ошибка команды /remove: неверный формат")
+
+def start(update, context):
+    update.message.reply_text(
+        "Привет! Я трекер кошельков.\n"
+        "Команды:\n"
+        "/add <address> <name> — добавить кошелек\n"
+        "/track <name> <types> — отслеживать типы (swap,buy,sell,send,receive)\n"
+        "/list — список кошельков\n"
+        "/remove <name> — удалить кошелек"
+    )
+    logger.info("Команда /start выполнена")
+
+def main():
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("add", add_wallet))
+    dp.add_handler(CommandHandler("track", track_wallet))
+    dp.add_handler(CommandHandler("list", list_wallets))
+    dp.add_handler(CommandHandler("remove", remove_wallet))
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
