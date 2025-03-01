@@ -67,7 +67,9 @@ async def monitor_program_ws(address, name, types, chat_id, program_id, bot):
 
         # Преобразуем program_id в Pubkey
         try:
+            logger.info(f"Попытка преобразования program_id: {program_id}")
             program_pubkey = Pubkey.from_string(program_id)
+            logger.info(f"Успешно преобразовано program_id {program_id} в Pubkey: {program_pubkey}")
         except Exception as e:
             logger.error(f"Ошибка преобразования program_id {program_id} в Pubkey: {str(e)}")
             return
@@ -77,6 +79,7 @@ async def monitor_program_ws(address, name, types, chat_id, program_id, bot):
         first_resp = await ws.recv()
 
         # Проверяем, является ли first_resp списком
+        logger.info(f"Получен ответ от WebSocket: {first_resp}")
         if isinstance(first_resp, list) and len(first_resp) > 0:
             subscription_id = first_resp[0].result
         else:
@@ -153,7 +156,9 @@ async def monitor_account_ws(address, name, types, chat_id, bot):
 
         # Преобразуем address в Pubkey
         try:
+            logger.info(f"Попытка преобразования address: {address}")
             address_pubkey = Pubkey.from_string(address)
+            logger.info(f"Успешно преобразовано address {address} в Pubkey: {address_pubkey}")
         except Exception as e:
             logger.error(f"Ошибка преобразования address {address} в Pubkey: {str(e)}")
             return
@@ -163,6 +168,7 @@ async def monitor_account_ws(address, name, types, chat_id, bot):
         first_resp = await ws.recv()
 
         # Проверяем, является ли first_resp списком
+        logger.info(f"Получен ответ от WebSocket: {first_resp}")
         if isinstance(first_resp, list) and len(first_resp) > 0:
             subscription_id = first_resp[0].result
         else:
