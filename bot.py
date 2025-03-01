@@ -49,6 +49,7 @@ def check_wallet(address):
 # Мониторинг кошелька
 def monitor_wallet(address, name, types, chat_id):
     last_tx = None
+    error_notified = False  # Флаг для отслеживания, было ли уже отправлено сообщение об ошибке
     while name in tracked_wallets:
         try:
             url = f"https://public-api.solscan.io/account/transactions?account={address}&limit=1"
@@ -85,10 +86,13 @@ def monitor_wallet(address, name, types, chat_id):
             else:
                 logger.warning(f"Нет транзакций для {address}")
         except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 404:
+            if e.response.status_code == 404 and not error_notified:
                 logger.error(f"Кошелек {name} ({address}) не найден на Solscan")
-                bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) не найден на Solscan. Возможно, он неактивен или введен неверно.")
-                break
+                bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) не найден на Solscan. Возможно, он неактивен или введен неверно. Мониторинг прекращен.")
+                error_notified = True  # Устанавливаем флаг, чтобы не повторять сообщение
+                if name in tracked_wallets:
+                    del tracked_wallets[name]  # Удаляем кошелек из отслеживания
+                break  # Прерываем цикл мониторинга
             else:
                 logger.error(f"Ошибка мониторинга {name}: {str(e)}")
                 bot.send_message(chat_id=chat_id, text=f"Ошибка мониторинга {name}: {str(e)}")
