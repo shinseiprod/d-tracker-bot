@@ -56,10 +56,12 @@ def check_wallet(address):
         url = f"https://public-api.solscan.io/account/transactions?account={address}&limit=1"
         response = requests.get(url)
         response.raise_for_status()
+        logger.info(f"Кошелек {address} найден на Solscan")
         return True
     except requests.exceptions.HTTPError as e:
         if response.status_code == 404:
-            return False
+            logger.warning(f"Кошелек {address} не найден на Solscan при проверке")
+            return False  # Кошелек не найден, но мы всё равно добавим его в отслеживание
         raise e
     except Exception as e:
         logger.error(f"Ошибка проверки кошелька {address}: {str(e)}")
@@ -114,7 +116,7 @@ def monitor_wallet(address, name, types, chat_id):
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404 and not error_notified:
                 logger.error(f"Кошелек {name} ({address}) не найден на Solscan")
-                bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) не найден на Solscan. Возможно, он неактивен или введен неверно.")
+                bot.send_message(chat_id=chat_id, text=f"Кошелек {name} ({address}) не найден на Solscan. Возможно, он неактивен или введен неверно. Продолжаю пытаться мониторить...")
                 error_notified = True  # Устанавливаем флаг, чтобы не повторять сообщение
             else:
                 logger.error(f"Ошибка мониторинга {name}: {str(e)}")
@@ -136,6 +138,8 @@ def classify_transaction(tx):
     # Более точная классификация свапов
     if "swap" in tx.get("txType", "").lower() or "Swap" in str(tx):
         return "swap"
+    elif "transfer" in tx.get("txType", "").lower():
+        return "transfer"
     elif tx["lamport"] != 0:
         return "receive" if tx["lamport"] > 0 else "send"
     elif token:
@@ -260,15 +264,6 @@ def button(update, context):
             query.message.reply_text("Выберите хотя бы один тип транзакции.", reply_markup=types_menu(types))
             return
         
-        # Проверяем кошелек перед мониторингом
-        if not check_wallet(address):
-            query.message.reply_text(
-                f"Кошелек {address} не найден на Solscan. Проверьте адрес и попробуйте снова.",
-                reply_markup=main_menu()
-            )
-            del user_states[user_id]
-            return
-
         with wallet_lock:
             tracked_wallets[name] = {"address": address, "types": types, "last_tx": None}
         thread = Thread(target=monitor_wallet, args=(address, name, types, chat_id))
