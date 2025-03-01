@@ -1,6 +1,7 @@
 import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
+import requests
 import time
 from threading import Thread, Lock
 import logging
@@ -55,6 +56,8 @@ SOL_TO_USD = 137.0  # Пример: 1 SOL = 137 USD (как на скриншо�
 
 # Solana WebSocket клиент
 SOLANA_WS_URL = "wss://api.mainnet-beta.solana.com"
+SOLANA_HTTP_URL = "https://api.mainnet-beta.solana.com"
+solana_client = Client(SOLANA_HTTP_URL)
 
 # Подписка на транзакции через WebSocket
 async def monitor_wallet_ws(address, name, types, chat_id):
@@ -81,17 +84,19 @@ async def monitor_wallet_ws(address, name, types, chat_id):
                     signature = data["signature"]
                     logger.info(f"Новая транзакция для {name}: {signature}")
 
-                    # Используем Solscan API для получения деталей транзакции
-                    url = f"https://public-api.solscan.io/transaction/{signature}"
-                    response = requests.get(url)
-                    response.raise_for_status()
-                    tx = response.json()
+                    # Используем Solana JSON-RPC для получения деталей транзакции
+                    tx_response = solana_client.get_transaction(signature, encoding="jsonParsed")
+                    if not tx_response["result"]:
+                        if not error_notified:
+                            bot.send_message(chat_id=chat_id, text=f"Не удалось получить детали транзакции {signature} для кошелька {name}.")
+                            error_notified = True
+                        continue
 
-                    # Классифицируем транзакцию
+                    tx = tx_response["result"]
                     tx_type = classify_transaction(tx)
                     if tx_type in types:
-                        # Упрощенные данные о свапе (нужен API для точных данных)
-                        sol_amount = tx.get("lamport", 0) / 1_000_000_000  # Лампорты в SOL
+                        # Упрощенные данные о транзакции (нужен API для точных данных)
+                        sol_amount = tx.get("meta", {}).get("fee", 0) / 1_000_000_000  # Лампорты в SOL (используем fee как пример)
                         usd_amount = sol_amount * SOL_TO_USD
                         token_amount = random.uniform(5000000, 10000000)  # Пример
                         token_name = "NYCPR"  # Нужно получать через API
@@ -120,22 +125,26 @@ async def monitor_wallet_ws(address, name, types, chat_id):
 
 # Классификация транзакций
 def classify_transaction(tx):
-    changes = tx.get("change", [])
-    if not changes:
-        return "unknown"
+    meta = tx.get("meta", {})
+    instructions = tx.get("transaction", {}).get("message", {}).get("instructions", [])
     
-    amount_change = changes[0]["amount"]
-    token = changes[0].get("tokenAddress", "")
+    # Проверяем тип транзакции
+    for instruction in instructions:
+        program_id = instruction.get("programId", "")
+        if "spl-token" in program_id.lower():
+            # Проверяем, связана ли инструкция с токенами (например, свап)
+            if "transfer" in str(instruction).lower():
+                return "transfer"
+            elif "swap" in str(instruction).lower():
+                return "swap"
     
-    # Более точная классификация свапов
-    if "swap" in tx.get("txType", "").lower() or "Swap" in str(tx):
-        return "swap"
-    elif "transfer" in tx.get("txType", "").lower():
-        return "transfer"
-    elif tx["lamport"] != 0:
-        return "receive" if tx["lamport"] > 0 else "send"
-    elif token:
-        return "buy" if amount_change > 0 else "sell"
+    # Проверяем изменения баланса SOL
+    if meta.get("preBalances") and meta.get("postBalances"):
+        pre_balances = meta["preBalances"]
+        post_balances = meta["postBalances"]
+        if pre_balances[0] != post_balances[0]:
+            return "receive" if post_balances[0] > pre_balances[0] else "send"
+    
     return "unknown"
 
 # Главное меню с кнопками
